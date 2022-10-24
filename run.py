@@ -25,9 +25,6 @@ from halp.algorithms.directed_paths import b_visit
 #from graphspace_python.api.client import GraphSpace
 #import graphspace_interface as interface
 
-user = 'skrieger@email.arizona.edu'
-password = 'ducktail'
-#graphspace = GraphSpace('skrieger@email.arizona.edu', 'ducktail')
     
 
 ## GLOBAL VARIABLES
