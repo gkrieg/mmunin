@@ -1,37 +1,27 @@
-from xml.dom import minidom
-import sys
-import cplex
 import itertools
 import heapq
 import json
-import time
 from multiprocessing import Pool
 
 from halp.directed_hypergraph import DirectedHypergraph
 from halp.algorithms.directed_paths import b_visit,visit
-from halp.utilities import directed_graph_transformations
 from queue import Queue
 
-EPSILON=0.0001
-CONSTANT=1000000
 
-NODE_DICT = {}
 
-def tail_path_heuristic(H,source,target,node_dict={},best_in_edges=False,print_paths=False,return_paths=False,sinkrecover=False,timingstats=False,doublyreachablesubgraph=False):
+def tail_path_heuristic(H,source,target,node_dict={},best_in_edges=False,print_paths=False,return_paths=False,sinkrecover=False,timingstats=False,doublyreachablesubgraph=False,event=None):
     '''
     Finds the distance to the tail for each edge in the hypergraph H that is reachable from the source vertex and backwards-recoverable from the target
     Returns a list of the tail distance for each edge
     ''' 
-    begin = time.time()
     reachableedges,edgedict,taildistancelist,heap,reachableedgecounter,reachedtable,entry_finder,counter,H = initialize(H,source,target,node_dict=node_dict,alreadydoublyreachable=doublyreachablesubgraph)
-    afterinitialization = time.time()
-    print(('initialization took {0}'.format(afterinitialization - begin)))
     print('done initializing, starting while loop')
     tailpathslist = {}
 
     returnpath = []
-    edgeprocesstime = 0
     while reachableedgecounter > 0:
+        if event != None and event.is_set():
+            return '','','',''
         if reachableedgecounter % 200 == 0:
             print('number of edges still to process: {}'.format(reachableedgecounter),flush=True)
         e,epriority = pop_node(heap,entry_finder)
@@ -50,19 +40,6 @@ def tail_path_heuristic(H,source,target,node_dict={},best_in_edges=False,print_p
             edgedict[e]['bestinedges'] = inedges
             edgestoprocess = findedgestoprocess(e,H,reachedtable,edgedict)
             #print('edges to process',edgestoprocess)
-            edgeprocesstimebefore = time.time()
-            '''
-            for f in edgestoprocess:
-                edgedict[f]['candidateinedges'].append(e)
-                if f in entry_finder and edgedict[f]['isremoved'] == False:
-                    fpath,_ = recover_short_hyperpath(H,f,best_in_edges,edgedict,source,taildistancelist)
-                    edgepriority = weight(H,fpath)
-                    add_node(heap,f,edgepriority,counter,entry_finder)
-                elif edgedict[f]['tailcount'] == 0 and f not in entry_finder:
-                    fpath,_ = recover_short_hyperpath(H,f,best_in_edges,edgedict,source,taildistancelist)
-                    edgepriority = weight(H,fpath)
-                    add_node(heap,f,edgepriority,counter,entry_finder)
-            '''
             #NOTE: new parallel section
             edgestoupdate = []
             for f in edgestoprocess:
@@ -76,34 +53,10 @@ def tail_path_heuristic(H,source,target,node_dict={},best_in_edges=False,print_p
                 add_node(heap,f,edgepriority,counter,entry_finder)
             #NOTE: end new parallel section
 
-            if timingstats == True:
-                print('time to process edges',edgeprocesstimeafter - edgeprocesstimebefore)
-            edgeprocesstimeafter = time.time()
-            edgeprocesstime += edgeprocesstimeafter - edgeprocesstimebefore
         else:
             print(('edge {0} was not in the reachable set but still in the hypergraph'.format(e)))
 
-    #print(taildistancelist)
-    if sinkrecover == True:
-        recoveredlist = set(H.get_backward_star(target))
-        recoveredlistall = set(H.get_backward_star(target))
-        print(len(H.get_backward_star(target)),'lelelel')
-        for f in H.get_backward_star(target):
-            a,b,c = recover(H,f,'full',edgedict)
-            a2,b2,c2 = recover(H,f,'all',edgedict)
-            fpath,_ = trim(a2,b2,c2,source,taildistancelist)
-
-            print(len(b2),'lenb2')
-            print('pathlength',weight(H,fpath))
-            for bb in b:
-                recoveredlist.add(bb)
-            for bb2 in b2:
-                recoveredlistall.add(bb2)
         
-    end = time.time()
-    print(('while loop took {0}'.format(end - afterinitialization)))
-    print(('whole path heuristic took {0}'.format(end - begin)))
-    print('time spent processing edges {}'.format(edgeprocesstime))
     if return_paths == True:
         return taildistancelist,H,returnpath,tailpathslist
     elif sinkrecover == True:
@@ -148,63 +101,17 @@ def print_out_sthyperpath(P,returnpath,print_paths,H,node_dict):
 
 def recover_short_hyperpath(H,f,which_inedges,edgedict,source,taildistancelist,timingstats=False):
 
-    if timingstats == True:
-        recoverbefore = time.time()
 
     if which_inedges == False:
         a,b,c = recover(H,f,'full',edgedict)
     else:
         a,b,c = recover(H,f,'short',edgedict)
 
-    if timingstats == True:
-        recoverafter = time.time()
-        print('recover time',recoverafter - recoverbefore)
 
     fpath,inedges = trim(a,b,c,source,taildistancelist)
 
-    if timingstats == True:
-        trimafter = time.time()
-        print('trim time',trimafter - recoverafter)
 
     return fpath,inedges
-
-
-def heuristic_path(H,source,target):
-    '''
-    Does some heuristic method to find the shortest path so that we can use that path to seed the ILP with cuts
-    This one in particular uses a modified version of Dijkstra's algorithm, which will approximately calculate the shortest path.
-
-    '''
-    entry_finder = {}               # mapping of tasks to entries
-    counter = itertools.count()     # unique sequence count
-    priorityq = []
-    add_node(priorityq,source,0,counter,entry_finder)
-    processed_nodes = set()
-    node_dict = {} #has a tuple of (priority,set of edges used to get there)
-    node_dict[source] = (0,[])
-    curnode = source
-    while not emptypq(priorityq,entry_finder) and curnode != target:
-        curnode,curpriority = pop_node(priorityq,entry_finder)
-        #print curnode,curpriority
-        for edge in H.hyperedge_id_iterator():
-            priority = 0
-            edgelist = []
-            for node in H.get_hyperedge_tail(edge):
-                if node not in processed_nodes and node != curnode:
-                    break
-                priority += node_dict[node][0] #This is the heuristic weight where we sum the distance to all vertices in the tail
-                edgelist += node_dict[node][1]
-            #If we get to this point, the edge can be traversed
-            else:
-                for node in H.get_hyperedge_head(edge):
-                    if node not in processed_nodes and (node not in node_dict or priority + H.get_hyperedge_weight(edge) < node_dict[node][0]):
-                        add_node(priorityq,node,priority + H.get_hyperedge_weight(edge),counter,entry_finder)
-                        node_dict[node] = (H.get_hyperedge_weight(edge) + priority,edgelist + [edge])
-
-        processed_nodes.add(curnode)
-
-    return node_dict[curnode][1]
-
 
 
 def findedgestoprocess(e,H,reachedtable,edgedict):
@@ -212,7 +119,6 @@ def findedgestoprocess(e,H,reachedtable,edgedict):
     Finds the edges whose tails intersect with e's head. Also sets e to their inedge lists and decrements their reached counter in the reachedtable
     '''
     F = set()
-    #print('finding edges for {} which has tail {} and head {}'.format(e,[NODE_DICT[v.strip()] for v in H.get_hyperedge_tail(e) if v in NODE_DICT],[NODE_DICT[v] for v in H.get_hyperedge_head(e)]))
     for v in H.get_hyperedge_head(e):
         #print(v)
         for f in H.get_forward_star(v):
@@ -309,8 +215,6 @@ def trim(H,F,e,source,taildistancelist,timingstats=False):
     '''
     #should first see if there is reachability before pruning any edge, if so, it returns no solution
     #start by sorting the edges into the order you are going to consider them
-    if timingstats == True:
-        starttime = time.time()
     if e[0] != 'e':
         reachingset = [e]
     else:
@@ -324,9 +228,6 @@ def trim(H,F,e,source,taildistancelist,timingstats=False):
         sortededges.append((taildistancelist[f],f))
     sortededges.sort(reverse=True)
     justedges = [s[1] for s in sortededges]
-    if timingstats == True:
-        sorttime = time.time()
-        print('time to sort',sorttime - starttime)
     H2 = DirectedHypergraph()
     #H2.add_nodes(H.get_node_set())
     H2.add_node(source)
@@ -336,17 +237,11 @@ def trim(H,F,e,source,taildistancelist,timingstats=False):
         newf = H2.add_hyperedge(H.get_hyperedge_tail(f),H.get_hyperedge_head(f))
         H2edgeids[f] = newf
         Hedgeids[newf] = f
-    if timingstats == True:
-        buildtime = time.time()
-        print('time to build alternate hypergraph',buildtime-sorttime)
     if check_reachability(H2,reachingset,source) == False:
         print('invalid edge set given to trim. Sink not reachable from source')
         print('number of edges in new hypergraph',len(H2.get_hyperedge_id_set()))
 
     #nodeset,_,__,___ = b_visit(H2,source)
-    if timingstats == True:
-        bvisittime = time.time()
-        print('time for b visit',bvisittime-buildtime)
     #isereached = True
     #for v in reachingset:
         #if v not in nodeset:
@@ -389,9 +284,6 @@ def trim(H,F,e,source,taildistancelist,timingstats=False):
                 #for v in H.get_hyperedge_tail(e):
                     #if v in H.get_hyperedge_head(f):
                         #tailedges.append(f)
-    if timingstats == True:
-        whiletime = time.time()
-        print('time in while loop', whiletime - bvisittime)
     return F2,list(tailedges)
 
 def check_reachability(H,reachset,source,forbiddenedges=set()):
@@ -477,13 +369,6 @@ def initialize(H,source,target,node_dict={},alreadydoublyreachable=False):
     '''
     edgedict = {}
 
-    #find reachable and backwards-recoverable edge list
-    #node_dict = printremappededges(H)
-    #print('found reachable edges')
-
-    #trim H
-
-    #print('building new hypergraph from doubly reachable set')
     if alreadydoublyreachable == False:
         reachableedges = findreachableandbackrecoverable(H,source,target)
         reachableedges.sort()
@@ -492,30 +377,11 @@ def initialize(H,source,target,node_dict={},alreadydoublyreachable=False):
         if len(node_dict) == 0:
             for v in H.node_iterator():
                 H2.add_node(v,H.get_node_attributes(v))
-        #H2.add_nodes(H.get_node_set())
-        #print('done adding new nodes')
-        #print('targetH',target, H.get_backward_star(target))
-        #for backedge in H.get_backward_star(target):
-            #if backedge in reachableedges:
-                #print('backhere')
-            #else:
-                #print('notbackhere')
         for edge in reachableedges:
             #H2.add_hyperedge(H.get_hyperedge_tail(edge),H.get_hyperedge_head(edge),{'oldname': edge, 'weight': H.get_hyperedge_weight(edge)})
             eid = H2.add_hyperedge(H.get_hyperedge_tail(edge),H.get_hyperedge_head(edge),weight =H.get_hyperedge_weight(edge))
-            #print('tail of edge {}'.format(eid))
-            #if len(H.get_hyperedge_tail(edge)) < 20:
-                #for v in H.get_hyperedge_tail(edge):
-                    #print(v[-4:])
-            #print('head of edge {}'.format(eid))
-            #if len(H.get_hyperedge_head(edge)) < 20:
-                #for v in H.get_hyperedge_head(edge):
-                    #print(v[-4:])
-        #print('done adding new edges')
-        #print('target',target, H2.get_backward_star(target))
         H2.add_node('SUPERSOURCE',{'label': 'SUPERSOURCE'}) 
         for edge in H2.get_forward_star('SUPERSOURCE'):
-            #print(edge,H2.get_
             forwardstarlist = []
             for v in H2.get_hyperedge_head(edge):
                 #print(v,H2.get_forward_star(v))
@@ -532,7 +398,6 @@ def initialize(H,source,target,node_dict={},alreadydoublyreachable=False):
         H = H2
     else:
         print('already have smallest edgeset')
-    #print('done removing nodes with no outedges from the source')
     #NOTE: This was removed for the enumeration code and needs to be added back in 
     #for v in H.get_node_set():
         ##need to remap the edges because just calling remove_node(v) removes also all the hyperedges v is in
@@ -587,55 +452,12 @@ def initialize(H,source,target,node_dict={},alreadydoublyreachable=False):
     for e in H.get_forward_star(source):
         if e in reachableedges:
             add_node(heap,e,weight(H,[e]),counter,entry_finder)
-    #print('heap initialized')
-    #print(heap)
-
     #initialize reachedtable
     reachedtable = {}
     for e in H.hyperedge_id_iterator():
         reachedtable[e] = []
 
     return reachableedges,edgedict,taildistancelist,heap,reachableedgecounter,reachedtable, entry_finder, counter, H
-
-def printremappededges(H):
-    print('starting to remap edges')
-    nodedict = {}
-    nodedict['SUPERSOURCE'] = 'SUPERSOURCE'
-    nodedict['SUPERTARGET'] = 'SUPERTARGET'
-    #ofile = open('out','r').readlines()
-    ofile = json.load(open('physical_entities.json','r'))
-    #for i in range(0,len(ofile),2):
-        #nodedict[ofile[i].strip()] = ofile[i+1].strip()
-    for entity in ofile:
-        H.add_node(entity['uri'],{'label': entity['name']})
-        nodedict[entity['uri']] = entity['name']
-    for v in H.node_iterator():
-        try:
-            H.get_node_attribute(v,'label')
-        except:
-            H.add_node(v,{'label': v})
-    for e in H.hyperedge_id_iterator():
-        #print(e)
-        tail = []
-
-        for v in H.get_hyperedge_tail(e):
-            if v in nodedict:
-                tail.append(nodedict[v])
-            else:
-                nodedict[v] = v
-                tail.append(v)
-            tail.append(H.get_node_attribute(v,'label'))
-        #print('tail',tail)
-        head = []
-        for v in H.get_hyperedge_head(e):
-            if v in nodedict:
-                head.append(nodedict[v])
-            else:
-                nodedict[v] = v
-                head.append(v)
-            head.append(H.get_node_attribute(v,'label'))
-        #print('head',head)
-    return nodedict
 
 def findreachableandbackrecoverable(H,source,target):
     '''
@@ -748,34 +570,3 @@ def emptypq(pq,entry_finder):
     return True
     
         
-def sort_edges_in_path(H,path,source):
-    '''
-    Here we want to put the hyperedges in a path into an order that works for the initial
-    set of inequalities.  To do this, we start with just s in S, then add to S any head of 
-    a hyperedge that is reachable with just the edges in S, and repeat
-    '''
-    orderedpath = []
-    S = set()
-    S.add(source)
-    pathlen = len(path)
-    while path:
-        for edge in path:
-            for node in H.get_hyperedge_tail(edge):
-                if node not in S:
-                    break
-            else:
-                orderedpath.append(edge)
-                path.remove(edge)
-                for headnode in H.get_hyperedge_head(edge):
-                    S.add(headnode)
-    return orderedpath
-    
-def visit_set(H,x,ilp,source):
-    y = ilp.solution.get_values(x)
-    hedges = [x[i].replace('a_','') for i in range(len(x)) if y[i]==1]
-    HSUB = DirectedHypergraph()
-    for hedge in hedges:
-        HSUB.add_hyperedge(H.get_hyperedge_tail(hedge),H.get_hyperedge_head(hedge),weight=1)
-    nodes,ignore,ignore = visit(HSUB,source)
-    return nodes,hedges
-
