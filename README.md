@@ -8,11 +8,19 @@ Biologically, a typical cell-signaling pathway consists of membrane-bound recept
 
 ## Installation
 
-Installation requires the cplex and halp packages. Building the hypergraph files requires a biopax parser from Ritz et al. available here: https://github.com/annaritz/pathway-connectivity.
+Installation requires the cplex and halp packages. Building the hypergraph files requires a biopax parser from Ritz et al. available here: https://github.com/annaritz/pathway-connectivity. Hypergraph files should be placed in the hypergraphs/ directory.
+
+## The node_dict.pkl file
+
+Mmunin depends on a node_dict.pkl file that gives a translation between the pathway commons ID given to nodes and a human-readable name. The pkl file is a python pickle-compressed dictionary that maps the node names to the human-readable ones. A new node_dict.pkl file will need to be created for each dataset.
 
 ## Running the code
 
-To run the code, use the following on the command line:
+To run the code for a single target, use the following on the command line:
 `python run.py --name <dataset name> --cyclicparallel --target <target name>`
 where dataset name is the name given to the -hyperedges.txt and -hypernodes.txt files,
 and target name is the name of the target in the same files.
+
+For pathway reconstruction instances, use the following command:
+`python run.py --name <dataset name> --pathwayreconstruct --pathway <pathway ID>`
+where the pathway ID is the Reactome pathway ID (ex. R-HSA-1222538).
